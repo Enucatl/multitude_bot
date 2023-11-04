@@ -1,29 +1,28 @@
 use std::env;
 use std::fs;
 
-use teloxide::{prelude::*, utils::command::BotCommands};
 use sea_orm;
+use teloxide::{prelude::*, utils::command::BotCommands};
 use urlencoding::encode;
 
 use migration::{Migrator, MigratorTrait};
 
-
 const TELOXIDE_TOKEN_PATH: &str = "/run/secrets/teloxide_token";
 
 async fn db_connect() -> Result<sea_orm::DatabaseConnection, sea_orm::DbErr> {
-    let db_user =
-        env::var("DB_USER").expect("DB_USER environment variable not set");
+    let db_user = env::var("DB_USER").expect("DB_USER environment variable not set");
     let db_password_file =
         env::var("DB_PASSWORD_FILE").expect("DB_PASSWORD_FILE environment variable not set");
     let db_password = fs::read_to_string(&db_password_file)
         .expect(&format!("Couldn't read file {}", &db_password_file));
     // Encode the password to escape special characters
     let db_password = encode(&db_password);
-    let db_host =
-        env::var("DB_HOST").expect("DB_HOST environment variable not set");
-    let db_name =
-        env::var("DB_NAME").expect("DB_NAME environment variable not set");
-    let db_url = format!("postgres://{}:{}@{}:5432/{}", &db_user, &db_password, &db_host, &db_name);
+    let db_host = env::var("DB_HOST").expect("DB_HOST environment variable not set");
+    let db_name = env::var("DB_NAME").expect("DB_NAME environment variable not set");
+    let db_url = format!(
+        "postgres://{}:{}@{}:5432/{}",
+        &db_user, &db_password, &db_host, &db_name
+    );
     let db = sea_orm::Database::connect(&db_url).await?;
     Ok(db)
 }
@@ -37,7 +36,7 @@ async fn main() {
     assert!(db.ping().await.is_ok());
     // Apply any new migrations to the database
     Migrator::up(&db, None).await.expect("Migrations failed");
-    
+
     log::info!("Starting command bot...");
     let teloxide_token = fs::read_to_string(TELOXIDE_TOKEN_PATH)
         .expect(&format!("Couldn't read file {}", TELOXIDE_TOKEN_PATH));

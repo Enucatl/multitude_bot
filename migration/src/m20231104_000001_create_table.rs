@@ -40,22 +40,14 @@ impl MigrationTrait for Migration {
                             .auto_increment()
                             .primary_key(),
                     )
-                    .col(
-                        ColumnDef::new(Feed::ChatId)
-                            .integer()
-                            .not_null()
-                    )
+                    .col(ColumnDef::new(Feed::ChatId).integer().not_null())
                     .foreign_key(
                         ForeignKey::create()
                             .name("ForeignKey-Feed-Chat")
                             .from(Feed::Table, Feed::ChatId)
-                            .to(Chat::Table, Chat::Id)
+                            .to(Chat::Table, Chat::Id),
                     )
-                    .col(
-                        ColumnDef::new(Feed::Url)
-                            .string()
-                            .not_null()
-                    )
+                    .col(ColumnDef::new(Feed::Url).string().not_null())
                     .col(
                         ColumnDef::new(Feed::CreatedAt)
                             .timestamp()
