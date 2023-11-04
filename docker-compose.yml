@@ -1,0 +1,36 @@
+version: '3'
+name: multitude
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    secrets:
+      - postgres_password_file
+  
+  multitude_bot:
+    build:
+      context: .
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_USER: ${POSTGRES_USER}
+      DB_NAME: ${POSTGRES_DB}
+      DB_PASSWORD_FILE: ${POSTGRES_PASSWORD_FILE}
+    secrets:
+      - postgres_password_file
+      - teloxide_token
+
+volumes:
+  postgres_data:
+
+secrets:
+  postgres_password_file:
+    file: secrets/postgres_password.txt
+  teloxide_token:
+    file: secrets/teloxide_token.txt
