@@ -6,8 +6,8 @@ WORKDIR /usr/src/app
 COPY Cargo.toml .
 
 # copy entity and migration crates for SeaORM
-COPY entity .
-COPY migration .
+COPY entity entity
+COPY migration migration
 
 # cargo needs a lib.rs or main.rs file to compile dependencies
 RUN mkdir src\

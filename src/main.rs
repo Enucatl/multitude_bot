@@ -1,8 +1,12 @@
 use std::env;
 use std::fs;
+
 use teloxide::{prelude::*, utils::command::BotCommands};
 use sea_orm;
 use urlencoding::encode;
+
+use migration::{Migrator, MigratorTrait};
+
 
 const TELOXIDE_TOKEN_PATH: &str = "/run/secrets/teloxide_token";
 
@@ -31,6 +35,8 @@ async fn main() {
     log::info!("Connecting to database...");
     let db = db_connect().await.expect("Can't connect to database");
     assert!(db.ping().await.is_ok());
+    // Apply any new migrations to the database
+    Migrator::up(&db, None).await.expect("Migrations failed");
     
     log::info!("Starting command bot...");
     let teloxide_token = fs::read_to_string(TELOXIDE_TOKEN_PATH)
