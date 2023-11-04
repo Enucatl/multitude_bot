@@ -3,6 +3,7 @@ use std::fs;
 
 use sea_orm;
 use teloxide::{prelude::*, utils::command::BotCommands};
+use tokio_schedule::{every, Job};
 use urlencoding::encode;
 
 use migration::{Migrator, MigratorTrait};
@@ -31,16 +32,25 @@ async fn db_connect() -> Result<sea_orm::DatabaseConnection, sea_orm::DbErr> {
 async fn main() {
     pretty_env_logger::init();
 
+    // Connect to database
     log::info!("Connecting to database...");
     let db = db_connect().await.expect("Can't connect to database");
     assert!(db.ping().await.is_ok());
+
     // Apply any new migrations to the database
     Migrator::up(&db, None).await.expect("Migrations failed");
 
+    // Start the bot
     log::info!("Starting command bot...");
     let teloxide_token = fs::read_to_string(TELOXIDE_TOKEN_PATH)
         .expect(&format!("Couldn't read file {}", TELOXIDE_TOKEN_PATH));
     let bot = Bot::new(teloxide_token);
+
+    // Check for feed updates
+    let every_30_seconds = every(30)
+        .seconds()
+        .perform(|| async { println!("Every minute at 00 and 30 seconds") });
+    tokio::spawn(every_30_seconds);
 
     Command::repl(bot, answer).await;
 }
