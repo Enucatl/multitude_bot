@@ -13,7 +13,7 @@ impl MigrationTrait for Migration {
                     .if_not_exists()
                     .col(
                         ColumnDef::new(Chat::Id)
-                            .integer()
+                            .big_integer()
                             .not_null()
                             .auto_increment()
                             .primary_key(),
@@ -40,7 +40,7 @@ impl MigrationTrait for Migration {
                             .auto_increment()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(Feed::ChatId).integer().not_null())
+                    .col(ColumnDef::new(Feed::ChatId).big_integer().not_null())
                     .foreign_key(
                         ForeignKey::create()
                             .name("ForeignKey-Feed-Chat")
