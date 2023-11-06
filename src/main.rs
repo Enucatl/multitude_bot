@@ -124,13 +124,24 @@ enum LoggedInCommand {
     #[command(description = "display this text.")]
     Help,
     #[command(description = "subscribe to this RSS feed")]
-    Subscribe { url: String },
+    Subscribe { link: String },
     #[command(description = "list my subscriptions")]
     List,
     #[command(description = "unsubscribe feed")]
     Unsubscribe { feed_id: i64 },
     #[command(description = "delete my user account")]
     Delete,
+}
+
+async fn create_chat(
+    db: &DatabaseConnection,
+    chat_id: i64,
+) -> Result<chat::Model, Box<dyn Error + Send + Sync>> {
+    let new_chat = chat::ActiveModel {
+        id: ActiveValue::Set(chat_id),
+        ..Default::default()
+    };
+    Ok(new_chat.insert(db).await?)
 }
 
 async fn process_logged_out_command(
@@ -147,21 +158,25 @@ async fn process_logged_out_command(
             bot.send_message(msg.chat.id, LoggedOutCommand::descriptions().to_string())
                 .await?;
         }
-        LoggedOutCommand::Start => {
-            let new_chat = chat::ActiveModel {
-                id: ActiveValue::Set(msg.chat.id.0),
-                ..Default::default()
-            };
-            let new_chat: chat::Model = new_chat.insert(&db).await.expect("DatabaseError");
-            bot.send_message(
-                msg.chat.id,
-                format!(
-                    "[{}] Registering your chat with the bot...Done.",
-                    new_chat.created_at
-                ),
-            )
-            .await?;
-        }
+        LoggedOutCommand::Start => match create_chat(&db, msg.chat.id.0).await {
+            Ok(new_chat) => {
+                bot.send_message(
+                    msg.chat.id,
+                    format!(
+                        "[{}] Registering your chat with the bot...Done.",
+                        new_chat.created_at
+                    ),
+                )
+                .await?;
+            }
+            Err(err) => {
+                bot.send_message(
+                    msg.chat.id,
+                    format!("[{}] Error in registering new chat", err),
+                )
+                .await?;
+            }
+        },
     }
     Ok(())
 }
@@ -173,7 +188,7 @@ async fn process_logged_out_command(
 ///
 /// # Arguments
 ///
-/// * `url` - A reference to a `String` containing the URL of the RSS feed to be validated.
+/// * `link` - A reference to a `String` containing the URL of the RSS feed to be validated.
 ///
 /// # Returns
 ///
@@ -206,16 +221,26 @@ async fn process_logged_out_command(
 /// }
 /// ```
 ///
-async fn validate_feed(url: &String) -> Result<Channel, Box<dyn Error>> {
-    let content = reqwest::get(url).await?.bytes().await?;
-    let channel = Channel::read_from(&content[..])?;
+async fn validate_feed(link: &String) -> Result<Channel, Box<dyn Error + Send + Sync>> {
+    let content = reqwest::get(link).await?.bytes().await?;
+    let mut channel = Channel::read_from(&content[..])?;
+    channel.set_link(link);
     channel.validate()?;
     Ok(channel)
 }
 
-async fn test() -> ResponseResult<()> {
-// async fn test() -> Result<(), Box<dyn Error>> {
-    Ok(())
+async fn create_feed(
+    db: &DatabaseConnection,
+    channel: &Channel,
+    chat_id: i64,
+) -> Result<feed::Model, Box<dyn Error + Send + Sync>> {
+    let new_feed = feed::ActiveModel {
+        chat_id: ActiveValue::Set(chat_id),
+        title: ActiveValue::Set(channel.title.clone()),
+        link: ActiveValue::Set(channel.link.clone()),
+        ..Default::default()
+    };
+    Ok(new_feed.insert(db).await?)
 }
 
 async fn process_command(
@@ -229,31 +254,30 @@ async fn process_command(
             bot.send_message(msg.chat.id, LoggedInCommand::descriptions().to_string())
                 .await?;
         }
-        LoggedInCommand::Subscribe { url } => {
-            // Implement Subscribe command logic to subscribe to an RSS feed.
-            // You can use the provided 'url' to determine which feed to subscribe to.
-            match test().await {
-                Ok(()) => {
-                    bot.send_message(msg.chat.id, "test was ok").await?;
+        LoggedInCommand::Subscribe { link } => {
+            let valid = validate_feed(&link).await;
+            match valid {
+                Ok(channel) => {
+                    let new_feed = create_feed(&db, &channel, msg.chat.id.0).await;
+                    match new_feed {
+                        Ok(f) => {
+                            bot.send_message(
+                                msg.chat.id,
+                                format!("Feed is valid:\n{}\n{}", channel.title, channel.link),
+                            )
+                            .await?;
+                        }
+                        Err(error) => {
+                            bot.send_message(msg.chat.id, format!("Error: {}", error))
+                                .await?;
+                        }
+                    }
                 }
                 Err(error) => {
-                    bot.send_message(msg.chat.id, "there was an error").await?;
+                    bot.send_message(msg.chat.id, format!("Error: {}", error))
+                        .await?;
                 }
             }
-            // let valid = validate_feed(&url).await;
-            // match valid {
-            //     Ok(channel) => {
-            //         bot.send_message(
-            //             msg.chat.id,
-            //             format!("Subscribed to:\n{}\n{}", channel.title, channel.link),
-            //         )
-            //         .await?;
-            //     }
-            //     Err(error) => {
-            //         bot.send_message(msg.chat.id, format!("Error: {}", error))
-            //             .await?;
-            //     }
-            // }
         }
         LoggedInCommand::List => {
             // Implement List command logic to list a user's subscriptions.

@@ -35,7 +35,7 @@ impl MigrationTrait for Migration {
                     .if_not_exists()
                     .col(
                         ColumnDef::new(Feed::Id)
-                            .integer()
+                            .big_integer()
                             .not_null()
                             .auto_increment()
                             .primary_key(),
@@ -45,9 +45,11 @@ impl MigrationTrait for Migration {
                         ForeignKey::create()
                             .name("ForeignKey-Feed-Chat")
                             .from(Feed::Table, Feed::ChatId)
-                            .to(Chat::Table, Chat::Id),
+                            .to(Chat::Table, Chat::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
                     )
-                    .col(ColumnDef::new(Feed::Url).string().not_null())
+                    .col(ColumnDef::new(Feed::Title).string().not_null())
+                    .col(ColumnDef::new(Feed::Link).string().not_null())
                     .col(
                         ColumnDef::new(Feed::CreatedAt)
                             .timestamp()
@@ -92,7 +94,8 @@ enum Feed {
     Table,
     Id,
     ChatId,
-    Url,
+    Title,
+    Link,
     CreatedAt,
     UpdatedAt,
 }

@@ -6,9 +6,10 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "feed")]
 pub struct Model {
     #[sea_orm(primary_key)]
-    pub id: i32,
-    pub chat_id: i32,
-    pub url: String,
+    pub id: i64,
+    pub chat_id: i64,
+    pub title: String,
+    pub link: String,
     pub created_at: DateTime,
     pub updated_at: DateTime,
 }
