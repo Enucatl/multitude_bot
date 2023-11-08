@@ -6,16 +6,14 @@ use rss::validation::Validate;
 use rss::Channel;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ColumnTrait, Database, DatabaseConnection, DbErr, DeleteResult,
-    EntityTrait, QueryFilter,
+    EntityTrait, QueryFilter, Set,
 };
 use teloxide::{
-    dispatching::{HandlerExt, UpdateFilterExt, dialogue::GetChatId},
+    dispatching::{HandlerExt, UpdateFilterExt},
     dptree,
     payloads::SendMessageSetters,
-    prelude::{
-        Bot, Dispatcher, LoggingErrorHandler, Requester, ResponseResult, Update,
-    },
-    types::{CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message},
+    prelude::{Bot, Dispatcher, LoggingErrorHandler, Requester, ResponseResult, Update},
+    types::{ChatId, Message, ParseMode},
     utils::command::BotCommands,
 };
 use tokio_schedule::{every, Job};
@@ -63,9 +61,11 @@ async fn main() {
     let bot = Bot::new(teloxide_token);
 
     // Check for feed updates
+    let bot_clone = bot.clone();
+    let db_clone = db.clone();
     let every_30_seconds = every(30)
         .seconds()
-        .perform(|| async { println!("Every minute at 00 and 30 seconds") });
+        .perform(move || check_for_updates(bot_clone.clone(), db_clone.clone()));
     tokio::spawn(every_30_seconds);
 
     let handler = dptree::entry()
@@ -73,16 +73,17 @@ async fn main() {
             // Filter messages from users who are not in the DB "logged out"
             Update::filter_message()
                 .filter_async(is_not_subscribed)
-                .filter_command::<LoggedOutCommand>()
-                .endpoint(process_logged_out_command),
+                .branch(
+                    Update::filter_message()
+                        .filter_command::<LoggedOutCommand>()
+                        .endpoint(process_logged_out_command),
+                )
+                .branch(dptree::entry().endpoint(ask_to_subscribe)),
         )
         .branch(
             Update::filter_message()
                 .filter_command::<LoggedInCommand>()
                 .endpoint(process_command),
-        )
-        .branch(
-            Update::filter_callback_query().endpoint(handle_callback),
         )
         .branch(
             // Handle other messages or actions here
@@ -104,6 +105,98 @@ async fn main() {
         .await;
 }
 
+/// Periodically checks for updates in RSS feeds and sends messages for new items.
+///
+/// This function takes a Telegram `Bot` instance and a database connection `DatabaseConnection`
+/// to fetch and process RSS feeds for updates. It fetches each RSS feed, parses it,
+/// checks for new items, and sends messages for new items to the corresponding Telegram chats.
+/// If any errors occur during the process, they are logged to the console.
+///
+/// # Arguments
+///
+/// * `bot` - A `Bot` instance for sending messages.
+/// * `db` - A `DatabaseConnection` for fetching feed and chat information.
+///
+/// # Example
+///
+/// ```rust
+/// check_for_updates(bot, db).await;
+/// ```
+async fn check_for_updates(bot: Bot, db: DatabaseConnection) {
+    println!("Every 30 seconds!");
+    let feeds = entity::prelude::Feed::find().all(&db).await;
+    if let Err(err) = feeds {
+        println!("Error fetching feeds: {:?}", err);
+        return;
+    }
+
+    for feed in feeds.unwrap() {
+        let content = reqwest::get(&feed.link).await;
+        if let Err(err) = content {
+            println!("Error fetching content: {:?}", err);
+            continue;
+        }
+        let content = content.unwrap();
+        let content = content.bytes().await;
+        if let Err(err) = content {
+            println!("Error reading bytes: {:?}", err);
+            continue;
+        }
+        let content = content.unwrap();
+        let channel = Channel::read_from(&content[..]);
+        if let Err(err) = channel {
+            println!("Error parsing channel: {:?}", err);
+            continue;
+        }
+        let channel = channel.unwrap();
+        let mut max_update_time: Option<sea_orm::prelude::DateTime> = None;
+
+        for item in channel.items {
+            let published_date = item.pub_date().unwrap_or_default();
+            let published_date = rfc822_sanitizer::parse_from_rfc2822_with_fallback(published_date)
+                .unwrap_or_default();
+            let published_date = published_date.naive_utc();
+            if published_date > feed.updated_at {
+                let mut message = String::new();
+                let link = item.link.unwrap_or("".to_string());
+                let title = item.title.unwrap_or("".to_string());
+                message.push_str(&format!("<i>{}</i>\n", feed.title));
+                message.push_str(&format!("<a href='{}'>{}</a>\n", link, title));
+                if let Err(err) = bot
+                    .send_message(ChatId(feed.chat_id), &message)
+                    .parse_mode(ParseMode::Html)
+                    .await
+                {
+                    println!("Error sending message: {:?}", err);
+                }
+                if max_update_time.is_none() || published_date > max_update_time.unwrap() {
+                    max_update_time = Some(published_date);
+                }
+            }
+        }
+        if let Some(max_time) = max_update_time {
+            if max_time > feed.updated_at {
+                let mut updated_feed: feed::ActiveModel = feed.into();
+                updated_feed.updated_at = Set(max_time);
+                let updated_feed = updated_feed.update(&db).await;
+                if let Err(err) = updated_feed {
+                    println!("Error updating feed: {:?}", err);
+                    continue;
+                }
+            }
+        }
+    }
+}
+
+async fn ask_to_subscribe(bot: Bot, msg: Message) -> ResponseResult<()> {
+    bot.send_message(
+        msg.chat.id,
+        "type /start to create an account and chat with the bot. Only this chat id will be stored.",
+    )
+    .await?;
+    Ok(())
+}
+
 async fn noop(_bot: Bot, _msg: Message) -> ResponseResult<()> {
     // no action on other messages
     Ok(())
@@ -118,60 +211,6 @@ async fn is_not_subscribed(msg: Message, db: DatabaseConnection) -> bool {
     c.is_none()
 }
 
-async fn handle_callback(
-    bot: Bot,
-    q: CallbackQuery,
-    db: &DatabaseConnection,
-) -> RequestResult<()> {
-    // match q.data {
-    //     Some(data) => {
-    //         match FeedCommand::parse(&data, "") {
-    //             Ok(command) => {
-    //                 match command {
-    //                     FeedCommand::Delete { feed_id } => {
-    //                         bot.send_message(q.chat_id().unwrap(), format!("Deleted {feed_id}.")).await?;
-    //                     }
-    //                     FeedCommand::Exit => {
-    //                         bot.send_message(q.chat_id().unwrap(), format!("All done thanks.")).await?;
-    //                     }
-    //                 }
-    //             }
-    //             Err(err) => {
-    //                 bot.send_message(q.chat_id().unwrap(), format!("Error {}", err)).await?;
-    //             }
-    //         }
-    //     }
-    //     None => {
-    //         bot.send_message(q.chat_id().unwrap(), format!("No data in callback query")).await?;
-    //     }
-    // }
-    Ok(())
-}
-
-// Function to parse the callback data and extract the feed id
-fn parse_callback_data(data: &str) -> Result<i64, Box<dyn Error + Send + Sync>> {
-    let parts: Vec<&str> = data.split(':').collect();
-    if parts.len() == 2 {
-        // The second part is the feed id
-        let feed_id = parts[1].parse::<i64>()?;
-        Ok(feed_id)
-    } else {
-        Err("Invalid callback data format".into())
-    }
-}
-
-#[derive(BotCommands, Clone)]
-#[command(
-    rename_rule = "lowercase",
-    description = "commands from the feed CRUD callback query interface"
-)]
-enum FeedCommand {
-    #[command(description = "delete this feed")]
-    Delete { feed_id: i64 },
-    #[command(description = "Exit from the keyboard")]
-    Exit,
-}
-
 #[derive(BotCommands, Clone)]
 #[command(
     rename_rule = "lowercase",
@@ -180,7 +219,7 @@ enum FeedCommand {
 enum LoggedOutCommand {
     #[command(description = "display this text.")]
     Help,
-    #[command(description = "subscribe to this RSS feed")]
+    #[command(description = "create an account for your chat with the bot")]
     Start,
 }
 
@@ -192,12 +231,16 @@ enum LoggedOutCommand {
 enum LoggedInCommand {
     #[command(description = "display this text.")]
     Help,
-    #[command(description = "subscribe to this RSS feed")]
+    #[command(description = "<RSS address> subscribe to an RSS feed")]
     Subscribe { link: String },
-    #[command(description = "unsubscribe feed")]
-    Unsubscribe,
-    #[command(description = "delete my user account")]
-    Delete,
+    #[command(description = "list feeds")]
+    List,
+    #[command(
+        description = "<feed id> - unsubscribe from feed. Take the ids from the list command"
+    )]
+    Unsubscribe { feed_id: i64 },
+    #[command(description = "delete my user account and all associated subscriptions")]
+    DeleteAccount,
 }
 
 async fn create_chat(
@@ -323,8 +366,20 @@ async fn read_feed(
 async fn delete_feed(
     db: &DatabaseConnection,
     id: i64,
+    chat_id: i64,
 ) -> Result<DeleteResult, Box<dyn Error + Send + Sync>> {
-    Ok(entity::prelude::Feed::delete_by_id(id).exec(db).await?)
+    Ok(entity::prelude::Feed::delete_many()
+        .filter(feed::Column::ChatId.eq(chat_id))
+        .filter(feed::Column::Id.eq(id))
+        .exec(db)
+        .await?)
+}
+
+async fn delete_chat(
+    db: &DatabaseConnection,
+    id: i64,
+) -> Result<DeleteResult, Box<dyn Error + Send + Sync>> {
+    Ok(entity::prelude::Chat::delete_by_id(id).exec(db).await?)
 }
 
 async fn process_command(
@@ -347,7 +402,7 @@ async fn process_command(
                         Ok(f) => {
                             bot.send_message(
                                 msg.chat.id,
-                                format!("Feed is valid:\n{}\n{}", channel.title, channel.link),
+                                format!("Subscribed to feed:\n{}\n{}", f.title, f.link),
                             )
                             .await?;
                         }
@@ -363,29 +418,15 @@ async fn process_command(
                 }
             }
         }
-        LoggedInCommand::Unsubscribe => {
-            // Retrieve and list the user's subscribed RSS feeds.
-            // Clicking deletes them from the table
-            let feeds = read_feed(&db, msg.chat.id.0).await;
-            match feeds {
-                Ok(feeds) => {
-                    let mut buttons: Vec<InlineKeyboardButton> = feeds
-                        .iter()
-                        .map(|f| {
-                            let callback_data = FeedCommand::Delete(f.id);
-                            InlineKeyboardButton::callback(
-                                f.title.clone(),
-                                callback_data.to_string(),
-                            )
-                        })
-                        .collect();
-                    buttons.push(InlineKeyboardButton::callback(
-                        "Exit menu",
-                        FeedCommand::Exit.to_string(),
-                    ));
-                    bot.send_message(msg.chat.id, "Currently registered feeds:")
-                        .reply_markup(InlineKeyboardMarkup::new([buttons]))
-                        .await?;
+        LoggedInCommand::Unsubscribe { feed_id } => {
+            let deleted = delete_feed(&db, feed_id, msg.chat.id.0).await;
+            match deleted {
+                Ok(delete_result) => {
+                    bot.send_message(
+                        msg.chat.id,
+                        format!("Deleted {} feed", delete_result.rows_affected),
+                    )
+                    .await?;
                 }
                 Err(error) => {
                     bot.send_message(msg.chat.id, format!("Error: {}", error))
@@ -393,11 +434,36 @@ async fn process_command(
                 }
             }
         }
-        LoggedInCommand::Delete => {
-            // Implement Delete command logic to delete a user account.
-            // Perform user account deletion or provide instructions.
-            bot.send_message(msg.chat.id, "Your account has been deleted.")
-                .await?;
+        LoggedInCommand::List => {
+            // Retrieve and list the user's subscribed RSS feeds.
+            let feeds = read_feed(&db, msg.chat.id.0).await;
+            match feeds {
+                Ok(feeds) => {
+                    let feed_list: String = feeds
+                        .iter()
+                        .map(|feed| format!("{} - {}", feed.id, feed.title))
+                        .collect::<Vec<String>>()
+                        .join("\n");
+                    bot.send_message(msg.chat.id, feed_list).await?;
+                }
+                Err(error) => {
+                    bot.send_message(msg.chat.id, format!("Error: {}", error))
+                        .await?;
+                }
+            }
+        }
+        LoggedInCommand::DeleteAccount => {
+            let deleted = delete_chat(&db, msg.chat.id.0).await;
+            match deleted {
+                Ok(_delete_result) => {
+                    bot.send_message(msg.chat.id, "Bye bye. Your account has been deleted.")
+                        .await?;
+                }
+                Err(error) => {
+                    bot.send_message(msg.chat.id, format!("Error: {}", error))
+                        .await?;
+                }
+            }
         }
     }
 

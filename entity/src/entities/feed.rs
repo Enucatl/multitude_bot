@@ -21,7 +21,7 @@ pub enum Relation {
         from = "Column::ChatId",
         to = "super::chat::Column::Id",
         on_update = "NoAction",
-        on_delete = "NoAction"
+        on_delete = "Cascade"
     )]
     Chat,
 }
